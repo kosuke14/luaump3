@@ -1,29 +1,10 @@
 --!optimize 2
 --!native
 --!nolint
--- Entry point for MP3 to WAV conversion.
--- Works in both Lune and Roblox (auto-detects environment).
+-- Lune-compatible entry point for MP3 to WAV conversion.
 -- Optimized with buffer API for high performance.
 
 local M = {}
-
--- Detect environment: Roblox (script.Parent) vs Lune
-local function getParent()
-    if script and script.Parent then
-        return script.Parent
-    end
-    return nil
-end
-
-local function getChild(name)
-    local parent = getParent()
-    if parent then
-        return parent:FindFirstChild(name) or require("./" .. name)
-    end
-    return require("./" .. name)
-end
-
--- Use direct relative require (works in Lune)
 local MPEG = require("./mpeg_loader")
 local decoder = require("./decoder")
 local wav = require("./wav")
