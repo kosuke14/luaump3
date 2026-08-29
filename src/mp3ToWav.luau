@@ -1,1 +1,0 @@
-return require(game and script.Parent or "./init.luau")

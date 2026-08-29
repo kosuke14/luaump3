@@ -1,15 +1,27 @@
 --!optimize 2
 --!native
 --!nolint
--- Lune-compatible entry point for MP3 to WAV conversion.
--- Optimized with buffer API for high performance.
+-- Entry point for MP3 to WAV conversion.
 
 local M = {}
-local isRoblox = not (not game)
-local MPEG = require(isRoblox and script:WaitForChild("mpeg_loader") or "./mpeg_loader")
-local decoder = require(isRoblox and script:WaitForChild("decoder") or "./decoder")
-local wav = require(isRoblox and script:WaitForChild("wav") or "./wav")
-local resampler = require(isRoblox and script:WaitForChild("resampler") or "./resampler")
+
+-- Roblox detection
+local IS_ROBLOX = type(game) == "userdata" or (type(game) == "table" and game.GetService ~= nil)
+
+local MPEG, decoder, wav, resampler
+
+if IS_ROBLOX then
+    MPEG = require(script:WaitForChild("mpeg_loader"))
+    decoder = require(script:WaitForChild("decoder"))
+    wav = require(script:WaitForChild("wav"))
+    resampler = require(script:WaitForChild("resampler"))
+else
+    -- Use @self for LunE relative to this init.luau
+    MPEG = require("@self/mpeg_loader")
+    decoder = require("@self/decoder")
+    wav = require("@self/wav")
+    resampler = require("@self/resampler")
+end
 
 local bit_l = bit32.lshift
 local floor = math.floor
@@ -29,7 +41,6 @@ end
 function M.fromBytes(data, options)
     options = options or {}
 
-    -- Use LuaMPEGParser to detect sample rate from the first frame
     local sourceRate = 44100
     local channels = 1
     local ok, parsed = pcall(function()
@@ -78,12 +89,12 @@ function M.fromBytes(data, options)
             for i = 0, nSamples - 1 do
                 local s = pcm[i]
                 if s > 32767 then s = 32767 elseif s < -32768 then s = -32768 end
-                buffer.writei16(pcmBuf, pcmPos, s); pcmPos += 2
+                buffer.writei16(pcmBuf, pcmPos, s); pcmPos = pcmPos + 2
             end
-            off += info.frame_bytes
-            frameCount += 1
+            off = off + info.frame_bytes
+            frameCount = frameCount + 1
         else
-            off += 1
+            off = off + 1
         end
     end
 
