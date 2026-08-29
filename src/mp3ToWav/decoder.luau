@@ -355,28 +355,33 @@ local function L3_decode_scalefactors(hdr, ist_pos, ist_off, bs, gr, scf, ch)
 		scfsi = -16
 	end
 
-	local n_iscf = L3_read_scalefactors(scf, ist_pos, ist_off, scf_size, g_scf_partitions[pidx], scf_off, bs, scfsi)
+	local iscf = {}
+	local n_iscf = L3_read_scalefactors(iscf, ist_pos, ist_off, scf_size, g_scf_partitions[pidx], scf_off, bs, scfsi)
 
 	if gr.n_short_sfb ~= 0 then
 		local sh = 3 - scf_shift
 		for i = 0, gr.n_short_sfb - 1, 3 do
-			scf[gr.n_long_sfb + i + 0] += gr.subblock_gain[0] * 2 ^ sh
-			scf[gr.n_long_sfb + i + 1] += gr.subblock_gain[1] * 2 ^ sh
-			scf[gr.n_long_sfb + i + 2] += gr.subblock_gain[2] * 2 ^ sh
+			iscf[gr.n_long_sfb + i + 0] += gr.subblock_gain[0] * 2 ^ sh
+			iscf[gr.n_long_sfb + i + 1] += gr.subblock_gain[1] * 2 ^ sh
+			iscf[gr.n_long_sfb + i + 2] += gr.subblock_gain[2] * 2 ^ sh
 		end
 	elseif gr.preflag ~= 0 then
 		for i = 0, 9 do
-			scf[11 + i] += g_preamp[i]
+			iscf[11 + i] += g_preamp[i]
 		end
 	end
 
-	-- NOTE: the subblock_gain/preamp adjustments above are applied to scf,
-	-- matching minimp3 which keeps iscf in the same uint8 array.
+	-- NOTE: the subblock_gain/preamp adjustments above are applied to the raw
+	-- iscf buffer, matching minimp3 which keeps them in a separate uint8 array.
+	-- The dequantized scf array must persist across granules: the count1 region
+	-- of L3_huffman consumes scalefactors beyond the transmitted range, reading
+	-- the stale values left there by previous granules (minimp3 behavior).
+
 	local gain_exp = gr.global_gain + BITS_DEQUANTIZER_OUT * 4 - 210 - (hdr_is_ms_stereo(hdr) and 2 or 0)
 	local gain = L3_ldexp_q2(2 ^ (MAX_SCFI / 4), MAX_SCFI - gain_exp)
-local n_sfb = gr.n_long_sfb + gr.n_short_sfb
+	local n_sfb = gr.n_long_sfb + gr.n_short_sfb
 	for i = 0, n_sfb - 1 do
-		scf[i] = L3_ldexp_q2(gain, scf[i] * 2 ^ scf_shift)
+		scf[i] = L3_ldexp_q2(gain, (iscf[i] or 0) * 2 ^ scf_shift)
 	end
 	return n_sfb
 end
@@ -478,7 +483,7 @@ local function L3_huffman(dst, dst_off, bs, gr_info, scf, layer3gr_limit)
 				end
 				check()
 			end
-			big_val_cnt -= pairs_to_decode
+			big_val_cnt -= np
 			sfb_cnt -= 1
 		until big_val_cnt <= 0 or sfb_cnt < 0
 	end
@@ -645,7 +650,7 @@ local function L3_reorder(grbuf, gr_off, scratch, sfb, sfb_start)
 			scratch[dst + 2] = grbuf[src + 2 * len + i]
 			dst += 3
 		end
-		src += 2 * len
+		src += 3 * len
 		sp += 3
 	end
 	for i = 0, dst - 1 do
@@ -1108,7 +1113,7 @@ local function L3_decode(dec, scratch, gr_base, nch)
 
 		if gr.n_short_sfb ~= 0 then
 			aa_bands = n_long_bands - 1
-			L3_reorder(scratch.grbuf, ch * 576 + n_long_bands * 18, scratch.syn, gr.sfbtab, 1 + gr.n_long_sfb)
+			L3_reorder(scratch.grbuf, ch * 576 + n_long_bands * 18, scratch.syn, gr.sfbtab, gr.n_long_sfb)
 		end
 
 		L3_antialias(scratch.grbuf, ch * 576, aa_bands)
