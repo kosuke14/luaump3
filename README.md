@@ -60,11 +60,14 @@ mp3-wav-luau/
 
 ## Usage in Roblox
 
-Place the `src/` folder in your Roblox project:
+Place the `src/` folder in your Roblox project (you can use script sync):
 
 ```lua
 local mp3ToWav = require(game.ReplicatedStorage.Modules.mp3ToWav)
+-- from string:
 local wavData = mp3ToWav.convert(mp3Bytes)
+-- from buffer (fast):
+local wavData = mp3ToWav.fromBuffer(mp3buffer)
 ```
 
 ## Limitations
