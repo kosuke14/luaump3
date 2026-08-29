@@ -1,9 +1,19 @@
+--!optimize 2
+--!native
 --!nolint
 -- Pure-Luau port of minimp3 (https://github.com/lieff/minimp3, public domain).
 -- MPEG-1/2/2.5 Layer III decoder (frame decode; frame sync/splitting is
 -- delegated to LuaMPEGParser). All internal arrays keep C 0-based indexing.
 
-local T = require("./tables")
+-- Environment-aware require
+local T
+if _G.__RBX_LUAU__ or (script and script.Parent) then
+    -- Roblox environment: tables is a sibling ModuleScript
+    T = require(script.Parent.tables)
+else
+    -- Lune: tables.luau is in same directory as this file
+    T = require("./tables")
+end
 
 local tabs, tabindex = T.tabs, T.tabindex
 local tab32, tab33 = T.tab32, T.tab33

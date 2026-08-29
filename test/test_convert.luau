@@ -1,24 +1,20 @@
---!nolint
--- Test the MP3 to WAV conversion library.
-
 local fs = require("@lune/fs")
 local mp3ToWav = require("../src/mp3ToWav")
 
--- Test file paths
-local mp3Path = "/tmp/mx/test_mono.mp3"
-local outPath = "/tmp/test_output.wav"
+local testFiles = {
+    { path = "/tmp/mx/test_mono.mp3", desc = "44.1kHz mono" },
+    { path = "/tmp/mx/test_stereo.mp3", desc = "44.1kHz stereo" },
+    { path = "/home/ubuntu/mimospg/tomp3.mp3", desc = "32kHz mono (music)" },
+}
 
-print("Loading MP3: " .. mp3Path)
-local mp3Data = fs.readFile(mp3Path)
-
-print("Converting...")
-local result = mp3ToWav.fromBytes(mp3Data)
-
-print(string.format(
-    "Source rate: %d Hz, Target rate: %d Hz, Channels: %d",
-    result.sourceRate, result.targetRate, result.channels
-))
-print(string.format("WAV size: %d bytes", #result.wav))
-
-fs.writeFile(outPath, result.wav)
-print("Wrote: " .. outPath)
+for _, test in ipairs(testFiles) do
+    local data = fs.readFile(test.path)
+    if data then
+        local result = mp3ToWav.fromBytes(data)
+        print(string.format("[%s] Source: %d Hz -> Target: %d Hz, Ch: %d, WAV: %d bytes",
+            test.desc, result.sourceRate, result.targetRate, result.channels, #result.wav))
+    else
+        print("SKIP:", test.path, "not found")
+    end
+end
+print("Done!")

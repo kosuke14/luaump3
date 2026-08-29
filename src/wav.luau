@@ -1,56 +1,47 @@
+--!optimize 2
+--!native
 --!nolint
--- WAV (s16le PCM) writer for the mp3-wav-luau library.
+-- WAV (s16le PCM) writer using buffer API for high performance.
 
 local M = {}
 
-local function build(samples, sampleRate, channels)
+function M.build(samples, sampleRate, channels)
     channels = channels or 1
     sampleRate = sampleRate or 44100
     local n = #samples
-    local bytesPerSample = 2
-    local blockAlign = channels * bytesPerSample
-    local byteRate = sampleRate * blockAlign
-    local dataSize = n * bytesPerSample
+    local dataSize = n * 2
     local fileSize = 36 + dataSize
 
-    local parts = {}
-    local function pushStr(s)
-        parts[#parts + 1] = s
-    end
-    local function pushU16(v)
-        parts[#parts + 1] = string.char(bit32.band(v, 0xFF), bit32.band(bit32.rshift(v, 8), 0xFF))
-    end
-    local function pushU32(v)
-        parts[#parts + 1] = string.char(bit32.band(v, 0xFF), bit32.band(bit32.rshift(v, 8), 0xFF), bit32.band(bit32.rshift(v, 16), 0xFF), bit32.band(bit32.rshift(v, 24), 0xFF))
-    end
+    local buf = buffer.create(44 + dataSize)
+    local off = 0
 
-    pushStr("RIFF")
-    pushU32(fileSize)
-    pushStr("WAVE")
-    pushStr("fmt ")
-    pushU32(16)
-    pushU16(1)
-    pushU16(channels)
-    pushU32(sampleRate)
-    pushU32(byteRate)
-    pushU16(blockAlign)
-    pushU16(16)
-    pushStr("data")
-    pushU32(dataSize)
+    -- RIFF header
+    buffer.writestring(buf, off, "RIFF"); off += 4
+    buffer.writeu32(buf, off, fileSize); off += 4
+    buffer.writestring(buf, off, "WAVE"); off += 4
 
-    local pcmParts = {}
+    -- fmt chunk
+    buffer.writestring(buf, off, "fmt "); off += 4
+    buffer.writeu32(buf, off, 16); off += 4
+    buffer.writeu16(buf, off, 1); off += 2
+    buffer.writeu16(buf, off, channels); off += 2
+    buffer.writeu32(buf, off, sampleRate); off += 4
+    buffer.writeu32(buf, off, sampleRate * channels * 2); off += 4
+    buffer.writeu16(buf, off, channels * 2); off += 2
+    buffer.writeu16(buf, off, 16); off += 2
+
+    -- data chunk
+    buffer.writestring(buf, off, "data"); off += 4
+    buffer.writeu32(buf, off, dataSize); off += 4
+
+    -- PCM samples (s16le)
     for i = 0, n - 1 do
         local s = samples[i]
-        if s > 32767 then s = 32767 end
-        if s < -32768 then s = -32768 end
-        if s < 0 then s = s + 65536 end
-        pcmParts[#pcmParts + 1] = string.char(bit32.band(s, 0xFF), bit32.band(bit32.rshift(s, 8), 0xFF))
+        if s > 32767 then s = 32767 elseif s < -32768 then s = -32768 end
+        buffer.writei16(buf, off, s); off += 2
     end
-    parts[#parts + 1] = table.concat(pcmParts)
 
-    return table.concat(parts)
+    return buffer.tostring(buf)
 end
-
-M.build = build
 
 return M

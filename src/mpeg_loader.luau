@@ -1,3 +1,5 @@
+--!optimize 2
+--!native
 --!nolint
 -- Self-contained MPEG parser module for mp3-wav-luau.
 -- This is a simplified implementation of the LuaMPEGParser concept.

@@ -7,8 +7,8 @@ A pure-Luau library for converting MP3 files to WAV format. Uses [LuaMPEGParser]
 - Pure Luau implementation (no native dependencies)
 - Uses LuaMPEGParser for MP3 frame parsing and header detection
 - Converts to WAV format (s16le, mono, 24kHz or 32kHz)
-- Automatic sample rate detection: sources >24kHz output 32kHz, otherwise 24kHz
-- Works in lune and Roblox
+- **Optimized with `buffer` API** for high-performance binary operations
+- Works in Lune and Roblox
 
 ## API
 
@@ -47,24 +47,23 @@ ffmpeg -i input.mp3 -ar {32000|24000} -ac 1 -acodec pcm_s16le -f wav output.wav
 ```
 mp3-wav-luau/
 ├── src/
-│   ├── mp3ToWav.luau    -- Main entry point
+│   ├── mp3ToWav.luau    -- Main entry point (Lune/Roblox compatible)
 │   ├── mpeg_loader.luau  -- LuaMPEGParser-compatible MPEG parser
-│   ├── mp3/
-│   │   ├── decoder.luau -- Pure-Luau minimp3 decoder
-│   │   └── tables.luau  -- Huffman/synthesis tables
-│   ├── wav.luau          -- WAV file writer
+│   ├── decoder.luau      -- Pure-Luau minimp3 decoder
+│   ├── tables.luau       -- Huffman/synthesis tables
+│   ├── wav.luau          -- WAV file writer (buffer API)
 │   └── resampler.luau    -- Linear interpolation resampler
-└── test/
-    └── test_convert.luau -- Test script
+├── test/
+│   └── test_convert.luau -- Test script
+└── README.md
 ```
 
 ## Usage in Roblox
 
-Place the `src/` folder in your Roblox project and require the modules appropriately:
+Place the `src/` folder in your Roblox project:
 
 ```lua
 local mp3ToWav = require(game.ReplicatedStorage.Modules.mp3ToWav)
-
 local wavData = mp3ToWav.convert(mp3Bytes)
 ```
 
@@ -73,7 +72,7 @@ local wavData = mp3ToWav.convert(mp3Bytes)
 - Layer III (MP3) audio only
 - VBR MP3 supported
 - No CRC checking
-- Linear interpolation resampling (simple but effective)
+- Linear interpolation resampling
 
 ## License
 
