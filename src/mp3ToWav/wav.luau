@@ -44,4 +44,36 @@ function M.build(samples, sampleRate, channels)
     return buffer.tostring(buf)
 end
 
+-- Same as build() but returns the WAV bytes as a buffer (no string copy).
+function M.buildBuffer(samples, sampleRate, channels)
+    channels = channels or 1
+    sampleRate = sampleRate or 44100
+    local n = #samples
+    local off = 44 -- PCM starts at offset 44
+    local buf = buffer.create(44 + n * 2)
+    local f = 0
+
+    buffer.writestring(buf, f, "RIFF"); f += 4
+    buffer.writeu32(buf, f, 36 + n * 2); f += 4
+    buffer.writestring(buf, f, "WAVE"); f += 4
+    buffer.writestring(buf, f, "fmt "); f += 4
+    buffer.writeu32(buf, f, 16); f += 4
+    buffer.writeu16(buf, f, 1); f += 2
+    buffer.writeu16(buf, f, channels); f += 2
+    buffer.writeu32(buf, f, sampleRate); f += 4
+    buffer.writeu32(buf, f, sampleRate * channels * 2); f += 4
+    buffer.writeu16(buf, f, channels * 2); f += 2
+    buffer.writeu16(buf, f, 16); f += 2
+    buffer.writestring(buf, f, "data"); f += 4
+    buffer.writeu32(buf, f, n * 2); f += 4
+
+    for i = 0, n - 1 do
+        local s = samples[i]
+        if s > 32767 then s = 32767 elseif s < -32768 then s = -32768 end
+        buffer.writei16(buf, off, s); off += 2
+    end
+
+    return buf
+end
+
 return M
