@@ -7,9 +7,9 @@
 
 -- Environment-aware require
 local T
-if _G.__RBX_LUAU__ or (script and script.Parent) then
+if game then
     -- Roblox environment: tables is a sibling ModuleScript
-    T = require(script.Parent.tables)
+	T = require(script.Parent:WaitForChild("tables"))
 else
     -- Lune: tables.luau is in same directory as this file
     T = require("./tables")
