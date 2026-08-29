@@ -5,6 +5,7 @@
 -- Optimized with buffer API for high performance.
 
 local M = {}
+local isRoblox = not (not game)
 local MPEG = require(isRoblox and script:WaitForChild("mpeg_loader") or "./mpeg_loader")
 local decoder = require(isRoblox and script:WaitForChild("decoder") or "./decoder")
 local wav = require(isRoblox and script:WaitForChild("wav") or "./wav")
