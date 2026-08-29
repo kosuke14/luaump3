@@ -16,7 +16,6 @@ if IS_ROBLOX then
     wav = require(script:WaitForChild("wav"))
     resampler = require(script:WaitForChild("resampler"))
 else
-    -- Use @self for LunE relative to this init.luau
     MPEG = require("@self/mpeg_loader")
     decoder = require("@self/decoder")
     wav = require("@self/wav")
@@ -26,7 +25,6 @@ end
 local bit_l = bit32.lshift
 local floor = math.floor
 
--- Detect the first frame offset (skip ID3v2 header if present)
 local function findFirstFrameOffset(data)
     if data:byte(1) == 73 and data:byte(2) == 68 and data:byte(3) == 51 then
         local b7 = data:byte(7) or 0
@@ -49,10 +47,10 @@ function M.fromBytes(data, options)
     end)
     if ok and parsed and parsed.Frames and #parsed.Frames > 0 then
         local firstFrame = parsed.Frames[1]
-        if firstFrame.SamplingRate then
+        if firstFrame and firstFrame.SamplingRate then
             sourceRate = firstFrame.SamplingRate
         end
-        if firstFrame.Channel then
+        if firstFrame and firstFrame.Channel then
             channels = (firstFrame.Channel == "Single Channel (Mono)") and 1 or 2
         end
     end
@@ -80,18 +78,24 @@ function M.fromBytes(data, options)
         local chunkSize = remaining < 10000 and remaining or 10000
         local chunk = buffer.readstring(inputBuf, off, chunkSize)
 
-        local pcm = table.create(2304)
+        local pcm = {}
         local samples, info = decoder.decode_frame(dec, scratch, chunk, pcm)
 
-        if samples > 0 then
-            actualChannels = info.channels
-            local nSamples = samples * info.channels
+        if samples and samples > 0 then
+            actualChannels = (info and info.channels) or 1
+            local nSamples = samples * actualChannels
             for i = 0, nSamples - 1 do
                 local s = pcm[i]
+                if s == nil then s = 0 end
                 if s > 32767 then s = 32767 elseif s < -32768 then s = -32768 end
                 buffer.writei16(pcmBuf, pcmPos, s); pcmPos = pcmPos + 2
             end
-            off = off + info.frame_bytes
+            local frameBytes = (info and (info.frame_bytes or info.frame_offset)) or 0
+            if frameBytes > 0 then
+                off = off + frameBytes
+            else
+                off = off + 1
+            end
             frameCount = frameCount + 1
         else
             off = off + 1
@@ -103,7 +107,7 @@ function M.fromBytes(data, options)
 
     if actualChannels > targetChannels then
         local monoCount = totalSamples // 2
-        monoSamples = table.create(monoCount)
+        monoSamples = {}
         for i = 0, monoCount - 1 do
             local left = buffer.readi16(pcmBuf, i * 4)
             local right = buffer.readi16(pcmBuf, i * 4 + 2)
@@ -111,7 +115,7 @@ function M.fromBytes(data, options)
         end
         actualChannels = 1
     else
-        monoSamples = table.create(totalSamples)
+        monoSamples = {}
         for i = 0, totalSamples - 1 do
             monoSamples[i] = buffer.readi16(pcmBuf, i * 2)
         end
