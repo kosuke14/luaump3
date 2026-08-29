@@ -5,10 +5,10 @@
 -- Optimized with buffer API for high performance.
 
 local M = {}
-local MPEG = require("./mpeg_loader")
-local decoder = require("./decoder")
-local wav = require("./wav")
-local resampler = require("./resampler")
+local MPEG = require(isRoblox and script:WaitForChild("mpeg_loader") or "./mpeg_loader")
+local decoder = require(isRoblox and script:WaitForChild("decoder") or "./decoder")
+local wav = require(isRoblox and script:WaitForChild("wav") or "./wav")
+local resampler = require(isRoblox and script:WaitForChild("resampler") or "./resampler")
 
 local bit_l = bit32.lshift
 local floor = math.floor
