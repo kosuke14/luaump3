@@ -8,6 +8,8 @@
 
 local tables = {}
 
+-- Bitrate halfrate table (from minimp3.h, C 0-based indexing).
+-- halfrate[version][layer][bitrate_index] gives kbps/2.
 tables.halfrate = {
 		[0]={
 			[0]={ [0]=0, 4, 8, 12, 16, 20, 24, 28, 32, 40, 48, 56, 64, 72, 80 },

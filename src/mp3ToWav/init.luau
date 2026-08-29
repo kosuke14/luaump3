@@ -2,142 +2,149 @@
 --!native
 --!nolint
 -- Entry point for MP3 to WAV conversion.
+-- Based on the initial-commit decode logic, optimized with the Luau buffer API.
+-- Works in both Roblox and Lune (auto-detects environment).
 
 local M = {}
 
 -- Roblox detection
 local IS_ROBLOX = type(game) == "userdata" or (type(game) == "table" and game.GetService ~= nil)
 
-local MPEG, decoder, wav, resampler
-
-if IS_ROBLOX then
-    MPEG = require(script:WaitForChild("mpeg_loader"))
-    decoder = require(script:WaitForChild("decoder"))
-    wav = require(script:WaitForChild("wav"))
-    resampler = require(script:WaitForChild("resampler"))
-else
-    MPEG = require("@self/mpeg_loader")
-    decoder = require("@self/decoder")
-    wav = require("@self/wav")
-    resampler = require("@self/resampler")
+-- Require a sibling module, working in both Roblox and Lune.
+-- In Roblox each .luau is a ModuleScript child; in Lune, sibling modules
+-- are resolved via "@self/" (relative "./x" does not resolve from an
+-- init.luau directory module in Lune).
+local function child(name)
+	if IS_ROBLOX then
+		return require(script:WaitForChild(name))
+	end
+	return require("@self/" .. name)
 end
+
+local MPEG = child("mpeg_loader")
+local decoder = child("decoder")
+local wav = child("wav")
+local resampler = child("resampler")
 
 local bit_l = bit32.lshift
 local floor = math.floor
 
+-- Detect the first frame offset (skip ID3v2 header if present).
+-- Returns a 1-based index into data (string.byte/string.sub indexing).
 local function findFirstFrameOffset(data)
-    if data:byte(1) == 73 and data:byte(2) == 68 and data:byte(3) == 51 then
-        local b7 = data:byte(7) or 0
-        local b8 = data:byte(8) or 0
-        local b9 = data:byte(9) or 0
-        local b10 = data:byte(10) or 0
-        return bit_l(b7, 21) + bit_l(b8, 14) + bit_l(b9, 7) + b10 + 10
-    end
-    return 0
+	local off = 1
+	if #data >= 3 and data:sub(1, 3) == "ID3" then
+		if #data >= 10 then
+			local b7, b8, b9, b10 = string.byte(data, 7, 10)
+			if b7 and b8 and b9 and b10 then
+				local size = bit_l(b7, 21) + bit_l(b8, 14) + bit_l(b9, 7) + b10
+				off = size + 11 -- +10 for header, +1 for 1-based indexing
+			end
+		end
+	end
+	return off
 end
 
 function M.fromBytes(data, options)
-    options = options or {}
+	options = options or {}
 
-    local sourceRate = 44100
-    local channels = 1
-    local ok, parsed = pcall(function()
-        local parser = MPEG.new(data)
-        return parser:Parse()
-    end)
-    if ok and parsed and parsed.Frames and #parsed.Frames > 0 then
-        local firstFrame = parsed.Frames[1]
-        if firstFrame and firstFrame.SamplingRate then
-            sourceRate = firstFrame.SamplingRate
-        end
-        if firstFrame and firstFrame.Channel then
-            channels = (firstFrame.Channel == "Single Channel (Mono)") and 1 or 2
-        end
-    end
+	-- Detect sample rate / channel count from the first frame.
+	local sourceRate = 44100
+	local channels = 1
+	local ok, parsed = pcall(function()
+		local parser = MPEG.new(data)
+		return parser:Parse()
+	end)
+	if ok and parsed and parsed.Frames and #parsed.Frames > 0 then
+		local firstFrame = parsed.Frames[1]
+		if firstFrame.SamplingRate then
+			sourceRate = firstFrame.SamplingRate
+		end
+		if firstFrame.Channel then
+			channels = (firstFrame.Channel == "Single Channel (Mono)") and 1 or 2
+		end
+	end
 
-    local targetRate = options.forceRate or (sourceRate > 24000 and 32000 or 24000)
-    local targetChannels = options.forceChannels or 1
-    local frameOffset = findFirstFrameOffset(data)
+	local targetRate = options.forceRate or (sourceRate > 24000 and 32000 or 24000)
+	local targetChannels = options.forceChannels or 1
 
-    local inputBuf = buffer.fromstring(data)
-    local inputLen = buffer.len(inputBuf)
+	local dec = decoder.new()
+	local scratch = decoder.new_scratch()
 
-    local dec = decoder.new()
-    local scratch = decoder.new_scratch()
+	-- Buffer-optimized sample accumulation (interleaved s16).
+	local MAX_SAMPLES = 8192 * 2304
+	local pcmBuf = buffer.create(MAX_SAMPLES * 2)
+	local pcmPos = 0
+	local actualChannels = 1
+	local totalBytes = #data
 
-    local MAX_FRAMES = 8192
-    local pcmBuf = buffer.create(MAX_FRAMES * 2304 * 2)
-    local pcmPos = 0
-    local actualChannels = 1
+	-- Decode all frames.
+	local off = findFirstFrameOffset(data)
+	while off < totalBytes do
+		local remaining = totalBytes - off + 1
+		if remaining < 4 then break end
 
-    local off = frameOffset
-    local frameCount = 0
+		local chunkSize = remaining < 10000 and remaining or 10000
+		local chunk = data:sub(off, off + chunkSize - 1)
 
-    while off < inputLen - 3 and frameCount < MAX_FRAMES do
-        local remaining = inputLen - off
-        local chunkSize = remaining < 10000 and remaining or 10000
-        local chunk = buffer.readstring(inputBuf, off, chunkSize)
+		local pcm = table.create(2304)
+		local samples, info = decoder.decode_frame(dec, scratch, chunk, pcm)
 
-        local pcm = {}
-        local samples, info = decoder.decode_frame(dec, scratch, chunk, pcm)
+		if samples and samples > 0 then
+			actualChannels = info.channels
+			for i = 0, samples * info.channels - 1 do
+				local s = pcm[i] or 0
+				if s > 32767 then s = 32767 elseif s < -32768 then s = -32768 end
+				buffer.writei16(pcmBuf, pcmPos, s)
+				pcmPos = pcmPos + 2
+			end
+			off = off + info.frame_bytes
+		else
+			off = off + 1
+		end
 
-        if samples and samples > 0 then
-            actualChannels = (info and info.channels) or 1
-            local nSamples = samples * actualChannels
-            for i = 0, nSamples - 1 do
-                local s = pcm[i]
-                if s == nil then s = 0 end
-                if s > 32767 then s = 32767 elseif s < -32768 then s = -32768 end
-                buffer.writei16(pcmBuf, pcmPos, s); pcmPos = pcmPos + 2
-            end
-            local frameBytes = (info and (info.frame_bytes or info.frame_offset)) or 0
-            if frameBytes > 0 then
-                off = off + frameBytes
-            else
-                off = off + 1
-            end
-            frameCount = frameCount + 1
-        else
-            off = off + 1
-        end
-    end
+		if pcmPos >= MAX_SAMPLES * 2 then break end
+	end
 
-    local totalSamples = pcmPos // 2
-    local monoSamples
+	local totalSamples = pcmPos // 2
+	local finalSamples
 
-    if actualChannels > targetChannels then
-        local monoCount = totalSamples // 2
-        monoSamples = {}
-        for i = 0, monoCount - 1 do
-            local left = buffer.readi16(pcmBuf, i * 4)
-            local right = buffer.readi16(pcmBuf, i * 4 + 2)
-            monoSamples[i] = floor((left + right) / 2)
-        end
-        actualChannels = 1
-    else
-        monoSamples = {}
-        for i = 0, totalSamples - 1 do
-            monoSamples[i] = buffer.readi16(pcmBuf, i * 2)
-        end
-    end
+	if actualChannels > targetChannels then
+		-- Downmix interleaved stereo/multi to mono.
+		local monoCount = totalSamples // 2
+		finalSamples = table.create(monoCount)
+		for i = 0, monoCount - 1 do
+			local left = buffer.readi16(pcmBuf, i * 4)
+			local right = buffer.readi16(pcmBuf, i * 4 + 2)
+			finalSamples[i] = floor((left + right) / 2)
+		end
+		actualChannels = 1
+	else
+		finalSamples = table.create(totalSamples)
+		for i = 0, totalSamples - 1 do
+			finalSamples[i] = buffer.readi16(pcmBuf, i * 2)
+		end
+	end
 
-    local finalSamples = monoSamples
-    if sourceRate ~= targetRate then
-        finalSamples = resampler.resample(monoSamples, sourceRate, targetRate, targetChannels)
-    end
+	channels = actualChannels
 
-    local wavData = wav.build(finalSamples, targetRate, targetChannels)
+	local wavSamples = finalSamples
+	if sourceRate ~= targetRate then
+		wavSamples = resampler.resample(finalSamples, sourceRate, targetRate, targetChannels)
+	end
 
-    return {
-        wav = wavData,
-        sourceRate = sourceRate,
-        targetRate = targetRate,
-        channels = targetChannels,
-    }
+	local wavData = wav.build(wavSamples, targetRate, targetChannels)
+
+	return {
+		wav = wavData,
+		sourceRate = sourceRate,
+		targetRate = targetRate,
+		channels = targetChannels,
+	}
 end
 
 function M.convert(data, options)
-    return M.fromBytes(data, options).wav
+	return M.fromBytes(data, options).wav
 end
 
 return M

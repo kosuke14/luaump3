@@ -106,7 +106,7 @@ local function hdr_get_my_sample_rate(h)
 	return hdr_get_sample_rate(h) + ((floor(h[1] / 8) % 2) + (floor(h[1] / 16) % 2)) * 3
 end
 local function hdr_is_frame_576(h)
-	return h[1] % 16 == 2
+	return bit32.band(h[1], 14) == 2
 end
 local function hdr_is_layer_1(h)
 	return h[1] % 8 >= 6
