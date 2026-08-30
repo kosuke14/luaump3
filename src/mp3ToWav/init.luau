@@ -21,13 +21,72 @@ local function child(name)
 	return require("@self/" .. name)
 end
 
-local MPEG = child("mpeg_loader")
 local decoder = child("decoder")
 local wav = child("wav")
 local resampler = child("resampler")
 
 local bit_l = bit32.lshift
 local floor = math.floor
+
+-- Default cooperative yield for Roblox: long conversions must periodically
+-- yield or the task gets killed with "exhausted allowed execution time".
+-- In Lune (tests/CLI) we do not yield by default.
+local DEFAULT_YIELD
+if IS_ROBLOX then
+	local ok, t = pcall(function()
+		return task
+	end)
+	if ok and type(t) == "table" and type(t.wait) == "function" then
+		DEFAULT_YIELD = t.wait
+	end
+else
+	local ok, t = pcall(require, "@lune/task")
+	if ok and type(t) == "table" and type(t.wait) == "function" then
+		DEFAULT_YIELD = nil -- keep CLI behavior synchronous; pass yieldFn to opt in
+	end
+end
+
+-- Creates a progress/yield throttler shared by fromBytes/fromBuffer.
+-- Options:
+--   yieldFn       function called periodically to yield the task
+--                 (defaults to task.wait in Roblox; pass false to disable)
+--   yieldInterval seconds of decode work between yields (default 0.25)
+--   onProgress    function(doneBytes, totalBytes) called just before each yield
+local function newYielder(options)
+	local yieldFn = options.yieldFn
+	if yieldFn == nil then
+		yieldFn = DEFAULT_YIELD
+	end
+	local interval = options.yieldInterval or 0.25
+	local onProgress = options.onProgress
+	local frames = 0
+	local last = os.clock()
+	return function(done, total)
+		frames += 1
+		if frames % 16 ~= 0 then
+			return
+		end
+		if os.clock() - last >= interval then
+			if onProgress then
+				onProgress(done, total)
+			end
+			if yieldFn then
+				yieldFn()
+			end
+			last = os.clock()
+		end
+	end
+end
+
+-- Check if data at the given 1-based offset looks like an MPEG sync word.
+-- Returns true if byte[offset] == 0xFF and (byte[offset+1] & 0xE0) == 0xE0.
+local function isMpegSync(data, off)
+	if off < 1 then return false end
+	local b1 = string.byte(data, off)
+	if b1 ~= 0xFF then return false end
+	local b2 = string.byte(data, off + 1)
+	return b2 ~= nil and bit32.band(b2, 0xE0) == 0xE0
+end
 
 -- Detect the first frame offset (skip ID3v2 header if present).
 -- Returns a 1-based index into data (string.byte/string.sub indexing).
@@ -42,30 +101,18 @@ local function findFirstFrameOffset(data)
 			end
 		end
 	end
+	-- The ID3v2 size may be wrong (broken tags). Verify we landed on a valid
+	-- MPEG sync word; if not, scan forward for one.
+	local limit = #data - 1
+	while off <= limit and not isMpegSync(data, off) do
+		off += 1
+	end
 	return off
 end
 
 function M.fromBytes(data, options)
 	options = options or {}
 
-	-- Detect sample rate / channel count from the first frame.
-	local sourceRate = 44100
-	local channels = 1
-	local ok, parsed = pcall(function()
-		local parser = MPEG.new(data)
-		return parser:Parse()
-	end)
-	if ok and parsed and parsed.Frames and #parsed.Frames > 0 then
-		local firstFrame = parsed.Frames[1]
-		if firstFrame.SamplingRate then
-			sourceRate = firstFrame.SamplingRate
-		end
-		if firstFrame.Channel then
-			channels = (firstFrame.Channel == "Single Channel (Mono)") and 1 or 2
-		end
-	end
-
-	local targetRate = options.forceRate or sourceRate --(sourceRate > 24000 and 32000 or 24000)
 	local targetChannels = options.forceChannels or 1
 
 	local dec = decoder.new()
@@ -75,10 +122,14 @@ function M.fromBytes(data, options)
 	local MAX_SAMPLES = 8192 * 2304
 	local pcmBuf = buffer.create(MAX_SAMPLES * 2)
 	local pcmPos = 0
+	local sourceRate = 44100
+	local channels = 1
 	local actualChannels = 1
+	local haveFirstFrame = false
 	local totalBytes = #data
 
 	-- Decode all frames.
+	local yielder = newYielder(options)
 	local off = findFirstFrameOffset(data)
 	while off < totalBytes do
 		local remaining = totalBytes - off + 1
@@ -92,6 +143,11 @@ function M.fromBytes(data, options)
 
 		if samples and samples > 0 then
 			actualChannels = info.channels
+			if not haveFirstFrame then
+				haveFirstFrame = true
+				sourceRate = info.hz
+				channels = info.channels
+			end
 			for i = 0, samples * info.channels - 1 do
 				local s = pcm[i] or 0
 				if s > 32767 then s = 32767 elseif s < -32768 then s = -32768 end
@@ -100,40 +156,71 @@ function M.fromBytes(data, options)
 			end
 			off = off + info.frame_bytes
 		else
-			off = off + 1
+			-- decode_frame scanned info.frame_bytes bytes without finding a
+			-- decodable frame (e.g. inside a large/broken ID3 tag or junk).
+			-- Skip them all at once: advancing one byte at a time would
+			-- rescan the whole chunk per byte and stall on big files (O(n^2)).
+			local skipped = info and info.frame_bytes or 0
+			off = off + (skipped > 0 and skipped or 1)
 		end
 
 		if pcmPos >= MAX_SAMPLES * 2 then break end
+		yielder(off, totalBytes)
 	end
 
-	local totalSamples = pcmPos // 2
-	local finalSamples
+	local targetRate = options.forceRate or sourceRate
 
-	if actualChannels > targetChannels then
-		-- Downmix interleaved stereo/multi to mono.
-		local monoCount = totalSamples // 2
-		finalSamples = table.create(monoCount)
-		for i = 0, monoCount - 1 do
-			local left = buffer.readi16(pcmBuf, i * 4)
-			local right = buffer.readi16(pcmBuf, i * 4 + 2)
-			finalSamples[i] = floor((left + right) / 2)
-		end
-		actualChannels = 1
+	local wavData
+	if targetChannels == 1 and sourceRate == targetRate and actualChannels == 1 then
+		-- Fast path: no downmix, no resample. Copy PCM straight into the WAV.
+		local f = 0
+		local wavBuf = buffer.create(44 + pcmPos)
+		buffer.writestring(wavBuf, f, "RIFF"); f += 4
+		buffer.writeu32(wavBuf, f, 36 + pcmPos); f += 4
+		buffer.writestring(wavBuf, f, "WAVE"); f += 4
+		buffer.writestring(wavBuf, f, "fmt "); f += 4
+		buffer.writeu32(wavBuf, f, 16); f += 4
+		buffer.writeu16(wavBuf, f, 1); f += 2
+		buffer.writeu16(wavBuf, f, 1); f += 2
+		buffer.writeu32(wavBuf, f, targetRate); f += 4
+		buffer.writeu32(wavBuf, f, targetRate * 2); f += 4
+		buffer.writeu16(wavBuf, f, 2); f += 2
+		buffer.writeu16(wavBuf, f, 16); f += 2
+		buffer.writestring(wavBuf, f, "data"); f += 4
+		buffer.writeu32(wavBuf, f, pcmPos); f += 4
+		buffer.copy(wavBuf, 44, pcmBuf, 0, pcmPos)
+		wavData = buffer.tostring(wavBuf)
 	else
-		finalSamples = table.create(totalSamples)
-		for i = 0, totalSamples - 1 do
-			finalSamples[i] = buffer.readi16(pcmBuf, i * 2)
+		-- Transform path (downmix/resample) via tables.
+		local totalSamples = pcmPos // 2
+		local finalSamples
+
+		if actualChannels > targetChannels then
+			-- Downmix interleaved stereo/multi to mono.
+			local monoCount = totalSamples // 2
+			finalSamples = table.create(monoCount)
+			for i = 0, monoCount - 1 do
+				local left = buffer.readi16(pcmBuf, i * 4)
+				local right = buffer.readi16(pcmBuf, i * 4 + 2)
+				finalSamples[i] = floor((left + right) / 2)
+			end
+			actualChannels = 1
+		else
+			finalSamples = table.create(totalSamples)
+			for i = 0, totalSamples - 1 do
+				finalSamples[i] = buffer.readi16(pcmBuf, i * 2)
+			end
 		end
+
+		channels = actualChannels
+
+		local wavSamples = finalSamples
+		if sourceRate ~= targetRate then
+			wavSamples = resampler.resample(finalSamples, sourceRate, targetRate, targetChannels)
+		end
+
+		wavData = wav.build(wavSamples, targetRate, targetChannels)
 	end
-
-	channels = actualChannels
-
-	local wavSamples = finalSamples
-	if sourceRate ~= targetRate then
-		wavSamples = resampler.resample(finalSamples, sourceRate, targetRate, targetChannels)
-	end
-
-	local wavData = wav.build(wavSamples, targetRate, targetChannels)
 
 	return {
 		wav = wavData,
@@ -161,6 +248,13 @@ function M.fromBuffer(mp3Buf, options)
 			+ buffer.readu8(mp3Buf, 9)
 		off = size + 11
 	end
+	-- Verify the offset lands on a valid MPEG sync word; scan forward if not.
+	while off <= totalBytes - 1 and not (
+		buffer.readu8(mp3Buf, off - 1) == 0xFF
+		and bit32.band(buffer.readu8(mp3Buf, off), 0xE0) == 0xE0
+	) do
+		off += 1
+	end
 
 	local dec = decoder.new()
 	local scratch = decoder.new_scratch()
@@ -173,6 +267,7 @@ function M.fromBuffer(mp3Buf, options)
 	local actualChannels = 1
 	local haveFirstFrame = false
 
+	local yielder = newYielder(options)
 	while off < totalBytes do
 		local remaining = totalBytes - off + 1
 		if remaining < 4 then break end
@@ -198,10 +293,14 @@ function M.fromBuffer(mp3Buf, options)
 			end
 			off = off + info.frame_bytes
 		else
-			off = off + 1
+			-- decode_frame scanned info.frame_bytes bytes without finding a
+			-- decodable frame; skip them all at once (see fromBytes).
+			local skipped = info and info.frame_bytes or 0
+			off = off + (skipped > 0 and skipped or 1)
 		end
 
 		if pcmPos >= MAX_SAMPLES * 2 then break end
+		yielder(off, totalBytes)
 	end
 
 	local targetRate = options.forceRate or sourceRate
