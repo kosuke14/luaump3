@@ -50,22 +50,18 @@ end
 -- Options:
 --   yieldFn       function called periodically to yield the task
 --                 (defaults to task.wait in Roblox; pass false to disable)
---   yieldInterval seconds of decode work between yields (default 0.25)
+--   yieldInterval seconds of decode work between yields (default 0.004).
+--                 Small bursts (~1 game frame) keep games responsive.
 --   onProgress    function(doneBytes, totalBytes) called just before each yield
 local function newYielder(options)
 	local yieldFn = options.yieldFn
 	if yieldFn == nil then
 		yieldFn = DEFAULT_YIELD
 	end
-	local interval = options.yieldInterval or 0.25
+	local interval = options.yieldInterval or 0.004
 	local onProgress = options.onProgress
-	local frames = 0
 	local last = os.clock()
 	return function(done, total)
-		frames += 1
-		if frames % 16 ~= 0 then
-			return
-		end
 		if os.clock() - last >= interval then
 			if onProgress then
 				onProgress(done, total)
@@ -131,6 +127,7 @@ function M.fromBytes(data, options)
 	-- Decode all frames.
 	local yielder = newYielder(options)
 	local off = findFirstFrameOffset(data)
+	local pcm = table.create(2304)
 	while off < totalBytes do
 		local remaining = totalBytes - off + 1
 		if remaining < 4 then break end
@@ -138,7 +135,6 @@ function M.fromBytes(data, options)
 		local chunkSize = remaining < 10000 and remaining or 10000
 		local chunk = data:sub(off, off + chunkSize - 1)
 
-		local pcm = table.create(2304)
 		local samples, info = decoder.decode_frame(dec, scratch, chunk, pcm)
 
 		if samples and samples > 0 then
@@ -268,6 +264,7 @@ function M.fromBuffer(mp3Buf, options)
 	local haveFirstFrame = false
 
 	local yielder = newYielder(options)
+	local pcm = table.create(2304)
 	while off < totalBytes do
 		local remaining = totalBytes - off + 1
 		if remaining < 4 then break end
@@ -275,7 +272,6 @@ function M.fromBuffer(mp3Buf, options)
 		local chunkSize = remaining < 10000 and remaining or 10000
 		local chunk = buffer.readstring(mp3Buf, off - 1, chunkSize)
 
-		local pcm = table.create(2304)
 		local samples, info = decoder.decode_frame(dec, scratch, chunk, pcm)
 
 		if samples and samples > 0 then

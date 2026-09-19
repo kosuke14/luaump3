@@ -718,11 +718,14 @@ local function L3_dct3_9(y, o)
 	y[o + 8] = s4v + s7v
 end
 
+local IMDCT_CO = table.create(9)
+local IMDCT_SI = table.create(9)
+
 local function L3_imdct36(grbuf, gr_off, overlap, ovl_off, window, nbands)
 	for j = 0, nbands - 1 do
 		local gb = gr_off + 18 * j
 		local ov = ovl_off + 9 * j
-		local co, si = {}, {}
+		local co, si = IMDCT_CO, IMDCT_SI
 		co[0] = -grbuf[gb + 0]
 		si[0] = grbuf[gb + 17]
 		for i = 0, 3 do
@@ -757,8 +760,11 @@ local function L3_idct3(x0, x1, x2, dst, doff)
 	dst[doff + 2] = a1 - m1
 end
 
+local IMDCT12_CO = table.create(3)
+local IMDCT12_SI = table.create(3)
+
 local function L3_imdct12(x, xoff, dst, doff, overlap, ooff)
-	local co, si = {}, {}
+	local co, si = IMDCT12_CO, IMDCT12_SI
 	L3_idct3(-x[xoff + 0], x[xoff + 6] + x[xoff + 3], x[xoff + 12] + x[xoff + 9], co, 0)
 	L3_idct3(x[xoff + 15], x[xoff + 12] - x[xoff + 9], x[xoff + 6] - x[xoff + 3], si, 0)
 	si[1] = -si[1]
@@ -772,11 +778,13 @@ local function L3_imdct12(x, xoff, dst, doff, overlap, ooff)
 	end
 end
 
+local IMDCT_SHORT_TMP = table.create(18)
+
 local function L3_imdct_short(grbuf, gr_off, overlap, ovl_off, nbands)
 	for b = 0, nbands - 1 do
 		local gb = gr_off + 18 * b
 		local ov = ovl_off + 9 * b
-		local tmp = table.create(18)
+		local tmp = IMDCT_SHORT_TMP
 		for i = 0, 17 do
 			tmp[i] = grbuf[gb + i]
 		end
@@ -914,7 +922,6 @@ local function mp3d_synth(grbuf, xl_off, pcm, dstl, dstr, nch, lins, loff)
 	mp3d_synth_pair(pcm, dstl, nch, lins, loff + 60)
 	mp3d_synth_pair(pcm, dstl + 32 * nch, nch, lins, loff + 60 + 64)
 
-	local a, b = {}, {}
 	for i = 14, 0, -1 do
 		lins[zlin + 4 * i] = grbuf[xl_off + 18 * (31 - i)]
 		lins[zlin + 4 * i + 1] = grbuf[xr_off + 18 * (31 - i)]
@@ -936,10 +943,6 @@ local function mp3d_synth(grbuf, xl_off, pcm, dstl, dstr, nch, lins, loff)
 			for j = 0, 3 do
 				local vzj = lins[vzo + j]
 				local vyj = lins[vyo + j]
-				if vzj == nil or vyj == nil then
-					error(string.format("syn nil at vzo=%d vy=%d vz=%d vyj_nil=%s loff=%d i=%d k=%d j=%d synlen=%d",
-						vzo, vyo + j, vzo + j, tostring(vyj == nil), loff, i, k, j, #lins + 1))
-				end
 				local eb = vzj * w1 + vyj * w0
 				if j == 0 then
 					b0 += eb
@@ -981,10 +984,12 @@ local function mp3d_synth(grbuf, xl_off, pcm, dstl, dstr, nch, lins, loff)
 	end
 end
 
+local DCT_T = table.create(32)
+
 local function mp3d_DCT_II(grbuf, gr_off, n)
 	for k = 0, n - 1 do
 		local y0 = gr_off + k
-		local t = table.create(32)
+		local t = DCT_T
 		for i = 0, 7 do
 			local x0 = grbuf[y0 + i * 18]
 			local x1 = grbuf[y0 + (15 - i) * 18]
