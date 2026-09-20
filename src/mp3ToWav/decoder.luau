@@ -1147,13 +1147,13 @@ local function hdr_at(buf, off)
 	}
 end
 
-local function mp3d_match_frame(mp3, off, mp3_bytes, frame_bytes)
+local function mp3d_match_frame(mp3, off, abs_end, frame_bytes)
 	local i, nmatch = 0, 0
 	while nmatch < 10 do
 		local h = hdr_at(mp3, off + i)
 		i += hdr_frame_bytes(h, frame_bytes) + hdr_padding(h)
 		nmatch += 1
-		if i + 4 > mp3_bytes then
+		if off + i + 4 > abs_end then
 			return nmatch > 1
 		end
 		if not hdr_compare(hdr_at(mp3, off), hdr_at(mp3, off + i)) then
@@ -1163,19 +1163,21 @@ local function mp3d_match_frame(mp3, off, mp3_bytes, frame_bytes)
 	return true
 end
 
--- Finds the next frame; stores frame size in dec.frame_size, returns offset.
-local function mp3d_find_frame(mp3, mp3_bytes, dec)
-	for i = 0, mp3_bytes - 4 - 1 do
-		local h = hdr_at(mp3, i)
+-- Finds the next frame; stores frame size in dec.frame_size, returns the
+-- absolute offset of the frame start.
+local function mp3d_find_frame(mp3, base, abs_end, dec)
+	local rel_end = abs_end - base
+	for i = 0, rel_end - 4 - 1 do
+		local h = hdr_at(mp3, base + i)
 		if hdr_valid(h) then
 			local frame_bytes = hdr_frame_bytes(h, dec.free_format_bytes)
 			local frame_and_padding = frame_bytes + hdr_padding(h)
 			local k = 4
-			while frame_bytes == 0 and k < 2304 and i + 2 * k < mp3_bytes - 4 do
-				if hdr_compare(h, hdr_at(mp3, i + k)) then
+			while frame_bytes == 0 and k < 2304 and base + i + 2 * k < abs_end - 4 do
+				if hdr_compare(h, hdr_at(mp3, base + i + k)) then
 					local fb = k - hdr_padding(h)
-					local nextfb = fb + hdr_padding(hdr_at(mp3, i + k))
-					if i + k + nextfb + 4 > mp3_bytes or not hdr_compare(h, hdr_at(mp3, i + k + nextfb)) then
+					local nextfb = fb + hdr_padding(hdr_at(mp3, base + i + k))
+					if base + i + k + nextfb + 4 > abs_end or not hdr_compare(h, hdr_at(mp3, base + i + k + nextfb)) then
 						k += 1
 						continue
 					end
@@ -1185,17 +1187,17 @@ local function mp3d_find_frame(mp3, mp3_bytes, dec)
 				end
 				k += 1
 			end
-			if (frame_bytes ~= 0 and i + frame_and_padding <= mp3_bytes and mp3d_match_frame(mp3, i, mp3_bytes - i, frame_bytes))
-				or (i == 0 and frame_and_padding == mp3_bytes)
+			if (frame_bytes ~= 0 and i + frame_and_padding <= rel_end and mp3d_match_frame(mp3, base + i, abs_end, frame_bytes))
+				or (i == 0 and frame_and_padding == rel_end)
 			then
 				dec.frame_size = frame_and_padding
-				return i
+				return base + i
 			end
 			dec.free_format_bytes = 0
 		end
 	end
 	dec.frame_size = 0
-	return mp3_bytes
+	return abs_end
 end
 
 --------------------------------------------------------------------------------
@@ -1257,34 +1259,39 @@ end
 
 -- Decodes one frame. mp3: byte string; pcm: array (0-based, interleaved)
 -- receiving up to 1152*channels samples, or nil to skip decode.
+-- mp3_off/mp3_len: optional region of mp3 to decode from (avoids chunk
+-- string copies — pass the full data plus an offset).
 -- Returns samples_decoded (0 on failure), info table:
---   frame_bytes, frame_offset, channels, hz, layer, bitrate_kbps
-function M.decode_frame(dec, scratch, mp3, pcm)
-	local mp3_bytes = #mp3
-	local i, frame_size = 0, 0
+--   frame_bytes (relative to mp3_off), frame_offset, channels, hz, layer,
+--   bitrate_kbps
+function M.decode_frame(dec, scratch, mp3, pcm, mp3_off, mp3_len)
+	local off = mp3_off or 0
+	local mp3_bytes = mp3_len or #mp3
+	local abs_end = off + mp3_bytes
+	local i, frame_size = off, 0
 	local success = true
 
-	if mp3_bytes > 4 and dec.header[0] == 0xFF and hdr_compare(dec.header, hdr_at(mp3, 0)) then
-		local h = hdr_at(mp3, 0)
+	if mp3_bytes > 4 and dec.header[0] == 0xFF and hdr_compare(dec.header, hdr_at(mp3, off)) then
+		local h = hdr_at(mp3, off)
 		frame_size = hdr_frame_bytes(h, dec.free_format_bytes) + hdr_padding(h)
-		if frame_size ~= mp3_bytes and (frame_size + 4 > mp3_bytes or not hdr_compare(h, hdr_at(mp3, frame_size))) then
+		if frame_size ~= mp3_bytes and (frame_size + 4 > mp3_bytes or not hdr_compare(h, hdr_at(mp3, off + frame_size))) then
 			frame_size = 0
 		end
 	end
 	if frame_size == 0 then
 		reset_decoder(dec)
-		i = mp3d_find_frame(mp3, mp3_bytes, dec)
+		i = mp3d_find_frame(mp3, off, abs_end, dec)
 		frame_size = dec.frame_size
-		if frame_size == 0 or i + frame_size > mp3_bytes then
-			return 0, { frame_bytes = i }
+		if frame_size == 0 or i + frame_size > abs_end then
+			return 0, { frame_bytes = i - off }
 		end
 	end
 
 	local hdr = hdr_at(mp3, i)
 	dec.header = hdr
 	local info = {
-		frame_bytes = i + frame_size,
-		frame_offset = i,
+		frame_bytes = (i - off) + frame_size,
+		frame_offset = i - off,
 		channels = hdr_is_mono(hdr) and 1 or 2,
 		hz = hdr_sample_rate_hz(hdr),
 		layer = 4 - hdr_get_layer(hdr),
