@@ -301,7 +301,7 @@ function DecodeMT:finish()
 		local totalSamples = self.pcmPos // 2
 		local finalSamples = table.create(totalSamples)
 		for i = 0, totalSamples - 1 do
-			finalSamples[i] = buffer.readi16(wavBuf, i * 2)
+			finalSamples[i] = buffer.readi16(wavBuf, 44 + i * 2)
 		end
 		local wavSamples = resampler.resample(finalSamples, self.sourceRate, targetRate, self.targetChannels)
 		local buf = wav.buildBuffer(wavSamples, targetRate, self.targetChannels)
