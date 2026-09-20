@@ -8,7 +8,11 @@ local M = {}
 function M.build(samples, sampleRate, channels)
     channels = channels or 1
     sampleRate = sampleRate or 44100
-    local n = #samples
+    -- samples is a 0-based table: `#samples` is one less than the count.
+    local n = #samples + 1
+    if n <= 1 then
+        n = 0
+    end
     local dataSize = n * 2
     local fileSize = 36 + dataSize
 
@@ -48,7 +52,11 @@ end
 function M.buildBuffer(samples, sampleRate, channels)
     channels = channels or 1
     sampleRate = sampleRate or 44100
-    local n = #samples
+    -- samples is a 0-based table: `#samples` is one less than the count.
+    local n = #samples + 1
+    if n <= 1 then
+        n = 0
+    end
     local off = 44 -- PCM starts at offset 44
     local buf = buffer.create(44 + n * 2)
     local f = 0
